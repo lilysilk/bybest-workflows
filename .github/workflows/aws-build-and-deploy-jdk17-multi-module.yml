@@ -1,21 +1,17 @@
-name: Build & Deploy GCP
+name: Build & Deploy AWS
 
 on:
   workflow_call:
     secrets:
-      GCP_CREDENTIALS:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
         required: true
     inputs:
-      GCR:
+      AWS_REGION:
         required: true
         type: string
-      PROJECT_ID:
-        required: true
-        type: string
-      GKE_NAME:
-        required: true
-        type: string
-      GKE_LOCATION:
+      EKS_CLUSTER_NAME:
         required: true
         type: string
       NAMESPACE:
@@ -28,10 +24,6 @@ on:
         required: false
         type: string
         default: 'dev'
-      # MANIFESTS:
-      #   required: false
-      #   type: string
-      #   default: 'manifests.yaml'
       MVN_ARGS:
         required: false
         type: string
@@ -39,72 +31,100 @@ on:
 
 jobs:
 
-  build-push-gcr:
+  build-push-ecr:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      IMAGE_TAG: ${{ steps.timestamp.outputs.IMAGE_TAG }}
+      IMAGE_URI: ${{ steps.build-and-push.outputs.image_uri }}
     steps:
     - name: checkout
-      uses: actions/checkout@master
+      uses: actions/checkout@v4
 
     - name: Set up JDK 17
-      uses: actions/setup-java@v2
+      uses: actions/setup-java@v4
       with:
         java-version: "17"
-        distribution: "adopt"
+        distribution: "temurin"
 
     - name: Run mvn clean install
       run: mvn -U -s mvn-settings.xml clean install -DskipTests -ntp ${{ inputs.MVN_ARGS }}
 
-    - name: Login to GCR
-      uses: docker/login-action@v1
-      with:
-        registry: ${{ inputs.GCR }}
-        username:  _json_key
-        password: ${{ secrets.GCP_CREDENTIALS }}
+    - name: Define ECR repository name
+      id: ecr-repo
+      run: |
+        ECR_REPOSITORY="${{ github.event.repository.name }}-${{ inputs.MODULE }}"
+        ECR_REPOSITORY=$(echo "$ECR_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+        echo "name=$ECR_REPOSITORY" >> $GITHUB_OUTPUT
+        echo "ECR repository: $ECR_REPOSITORY"
 
-    - name: "定义docker images tag"
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ inputs.AWS_REGION }}
+
+    - name: Ensure ECR repository exists
+      env:
+        ECR_REPOSITORY: ${{ steps.ecr-repo.outputs.name }}
+        AWS_REGION: ${{ inputs.AWS_REGION }}
+      run: |
+        if aws ecr describe-repositories \
+          --repository-names "$ECR_REPOSITORY" \
+          --region "$AWS_REGION" >/dev/null 2>&1; then
+          echo "ECR repository already exists: $ECR_REPOSITORY"
+        else
+          echo "Creating ECR repository: $ECR_REPOSITORY"
+          aws ecr create-repository \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-scanning-configuration scanOnPush=true \
+            --encryption-configuration encryptionType=AES256 \
+            --region "$AWS_REGION"
+        fi
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Define docker image tag
       id: timestamp
       env:
         TZ: Asia/Shanghai
       run: |
-        echo "IMAGE_TAG=${{ inputs.ENV }}-${{ github.sha }}-$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
+        echo "IMAGE_TAG=${{ inputs.MODULE }}-${{ inputs.ENV }}-${{ github.sha }}-$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
 
     - name: Build and Push
       id: build-and-push
-      uses: docker/build-push-action@v2
-      with:
-        context: ./${{ inputs.MODULE }}
-        builder: ${{ steps.buildx.outputs.name }}
-        push: true
-        tags: |
-          ${{ inputs.GCR }}/${{ inputs.PROJECT_ID }}/${{ github.repository }}/${{ inputs.MODULE }}:${{ steps.timestamp.outputs.IMAGE_TAG }}
-          ${{ inputs.GCR }}/${{ inputs.PROJECT_ID }}/${{ github.repository }}/${{ inputs.MODULE }}:latest
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: ${{ steps.ecr-repo.outputs.name }}
+        IMAGE_TAG: ${{ steps.timestamp.outputs.IMAGE_TAG }}
+      run: |
+        IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+        docker build -t "$IMAGE_URI" -t "$ECR_REGISTRY/$ECR_REPOSITORY:${{ inputs.MODULE }}-latest" "./${{ inputs.MODULE }}"
+        docker push "$IMAGE_URI"
+        docker push "$ECR_REGISTRY/$ECR_REPOSITORY:${{ inputs.MODULE }}-latest"
+        echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
 
-    outputs:
-      IMAGE_TAG: ${{ steps.timestamp.outputs.IMAGE_TAG }}
-
-  deploy-to-gcp:
-    name: Deploy to GKE
+  deploy-to-eks:
+    name: Deploy to EKS
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [build-push-gcr]
+    needs: [build-push-ecr]
     steps:
     - name: checkout
-      uses: actions/checkout@master
+      uses: actions/checkout@v4
 
-    - id: 'auth'
-      name: 'Authenticate to Google Cloud'
-      uses: 'google-github-actions/auth@v2'
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
       with:
-        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ inputs.AWS_REGION }}
 
-    - name: get gke credentials
-      id: 'get-credentials'
-      uses: 'google-github-actions/get-gke-credentials@v2'
-      with:
-        cluster_name: ${{ inputs.GKE_NAME }}
-        location: ${{ inputs.GKE_LOCATION }}
-        project_id: ${{ inputs.PROJECT_ID }}
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --name ${{ inputs.EKS_CLUSTER_NAME }} --region ${{ inputs.AWS_REGION }}
 
     - name: Deploy to K8S
       uses: azure/k8s-deploy@v1
@@ -112,5 +132,5 @@ jobs:
         manifests: |
           ${{ github.workspace }}/${{ inputs.MODULE }}/manifests/manifests-${{ inputs.ENV }}.yaml
         images: |
-          ${{ inputs.GCR }}/${{ inputs.PROJECT_ID }}/${{ github.repository }}/${{ inputs.MODULE }}:${{ needs.build-push-gcr.outputs.IMAGE_TAG }}
+          ${{ needs.build-push-ecr.outputs.IMAGE_URI }}
         namespace: ${{ inputs.NAMESPACE }}
