@@ -84,6 +84,26 @@ jobs:
             --image-scanning-configuration scanOnPush=true \
             --encryption-configuration encryptionType=AES256 \
             --region "$AWS_REGION"
+          aws ecr put-lifecycle-policy \
+            --repository-name "$ECR_REPOSITORY" \
+            --lifecycle-policy-text '{
+              "rules": [
+                {
+                  "rulePriority": 1,
+                  "description": "Retain only 30 most recent images",
+                  "selection": {
+                    "tagStatus": "any",
+                    "countType": "imageCountMoreThan",
+                    "countNumber": 30
+                  },
+                  "action": {
+                    "type": "expire"
+                  }
+                }
+              ]
+            }' \
+            --region "$AWS_REGION"
+          echo "ECR lifecycle policy applied: keep 30 images in $ECR_REPOSITORY"
         fi
 
     - name: Login to Amazon ECR
