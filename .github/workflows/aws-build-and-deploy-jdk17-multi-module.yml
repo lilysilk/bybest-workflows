@@ -55,6 +55,9 @@ jobs:
       run: |
         ECR_REPOSITORY="${{ github.event.repository.name }}"
         ECR_REPOSITORY=$(echo "$ECR_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+        if [ -n "${{ inputs.ENV }}" ]; then
+          ECR_REPOSITORY="${ECR_REPOSITORY}-${{ inputs.ENV }}"
+        fi
         echo "name=$ECR_REPOSITORY" >> $GITHUB_OUTPUT
         echo "ECR repository: $ECR_REPOSITORY"
 
@@ -92,7 +95,7 @@ jobs:
       env:
         TZ: Asia/Shanghai
       run: |
-        echo "IMAGE_TAG=${{ inputs.MODULE }}-${{ inputs.ENV }}-${{ github.sha }}-$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
+        echo "IMAGE_TAG=${{ inputs.MODULE }}-${{ github.sha }}-$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
 
     - name: Build and Push
       id: build-and-push
