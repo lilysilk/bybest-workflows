@@ -53,7 +53,7 @@ jobs:
     - name: Define ECR repository name
       id: ecr-repo
       run: |
-        ECR_REPOSITORY="${{ github.event.repository.name }}-${{ inputs.MODULE }}"
+        ECR_REPOSITORY="${{ github.event.repository.name }}/${{ inputs.MODULE }}-${{ inputs.ENV }}"
         ECR_REPOSITORY=$(echo "$ECR_REPOSITORY" | tr '[:upper:]' '[:lower:]')
         echo "name=$ECR_REPOSITORY" >> $GITHUB_OUTPUT
         echo "ECR repository: $ECR_REPOSITORY"
