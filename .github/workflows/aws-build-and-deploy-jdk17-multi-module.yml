@@ -125,9 +125,9 @@ jobs:
         IMAGE_TAG: ${{ steps.timestamp.outputs.IMAGE_TAG }}
       run: |
         IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-        docker build -t "$IMAGE_URI" -t "$ECR_REGISTRY/$ECR_REPOSITORY:${{ inputs.MODULE }}:latest" "./${{ inputs.MODULE }}"
+        docker build -t "$IMAGE_URI" -t "$ECR_REGISTRY/$ECR_REPOSITORY:${{ inputs.MODULE }}-latest" "./${{ inputs.MODULE }}"
         docker push "$IMAGE_URI"
-        docker push "$ECR_REGISTRY/$ECR_REPOSITORY:${{ inputs.MODULE }}:latest"
+        docker push "$ECR_REGISTRY/$ECR_REPOSITORY:${{ inputs.MODULE }}-latest"
         echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
 
   deploy-to-eks:
