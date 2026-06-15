@@ -1,0 +1,156 @@
+name: Build & Deploy AWS
+
+on:
+  workflow_call:
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+    inputs:
+      AWS_REGION:
+        required: true
+        type: string
+      EKS_CLUSTER_NAME:
+        required: true
+        type: string
+      NAMESPACE:
+        required: true
+        type: string
+      ENV:
+        required: false
+        type: string
+        default: 'dev'
+      MVN_ARGS:
+        required: false
+        type: string
+        default: ''
+
+jobs:
+
+  build-push-ecr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      IMAGE_TAG: ${{ steps.timestamp.outputs.IMAGE_TAG }}
+      IMAGE_URI: ${{ steps.build-and-push.outputs.image_uri }}
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: "17"
+        distribution: "temurin"
+
+    - name: Run mvn clean install
+      run: mvn -U -s mvn-settings.xml clean install -DskipTests -ntp ${{ inputs.MVN_ARGS }}
+
+    - name: Define ECR repository name
+      id: ecr-repo
+      run: |
+        ECR_REPOSITORY="${{ github.event.repository.name }}"
+        ECR_REPOSITORY=$(echo "$ECR_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+        if [ -n "${{ inputs.ENV }}" ]; then
+          ECR_REPOSITORY="${ECR_REPOSITORY}-${{ inputs.ENV }}"
+        fi
+        echo "name=$ECR_REPOSITORY" >> $GITHUB_OUTPUT
+        echo "ECR repository: $ECR_REPOSITORY"
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ inputs.AWS_REGION }}
+
+    - name: Ensure ECR repository exists
+      env:
+        ECR_REPOSITORY: ${{ steps.ecr-repo.outputs.name }}
+        AWS_REGION: ${{ inputs.AWS_REGION }}
+      run: |
+        if aws ecr describe-repositories \
+          --repository-names "$ECR_REPOSITORY" \
+          --region "$AWS_REGION" >/dev/null 2>&1; then
+          echo "ECR repository already exists: $ECR_REPOSITORY"
+        else
+          echo "Creating ECR repository: $ECR_REPOSITORY"
+          aws ecr create-repository \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-scanning-configuration scanOnPush=true \
+            --encryption-configuration encryptionType=AES256 \
+            --region "$AWS_REGION"
+          aws ecr put-lifecycle-policy \
+            --repository-name "$ECR_REPOSITORY" \
+            --lifecycle-policy-text '{
+              "rules": [
+                {
+                  "rulePriority": 1,
+                  "description": "Retain only 30 most recent images",
+                  "selection": {
+                    "tagStatus": "any",
+                    "countType": "imageCountMoreThan",
+                    "countNumber": 30
+                  },
+                  "action": {
+                    "type": "expire"
+                  }
+                }
+              ]
+            }' \
+            --region "$AWS_REGION"
+          echo "ECR lifecycle policy applied: keep 30 images in $ECR_REPOSITORY"
+        fi
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Define docker image tag
+      id: timestamp
+      env:
+        TZ: Asia/Shanghai
+      run: |
+        echo "IMAGE_TAG=${{ inputs.ENV }}-${{ github.sha }}-$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
+
+    - name: Build and Push
+      id: build-and-push
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: ${{ steps.ecr-repo.outputs.name }}
+        IMAGE_TAG: ${{ steps.timestamp.outputs.IMAGE_TAG }}
+      run: |
+        IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+        docker build -t "$IMAGE_URI" -t "$ECR_REGISTRY/$ECR_REPOSITORY:latest" .
+        docker push "$IMAGE_URI"
+        docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+        echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+  deploy-to-eks:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [build-push-ecr]
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ inputs.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --name ${{ inputs.EKS_CLUSTER_NAME }} --region ${{ inputs.AWS_REGION }}
+
+    - name: Deploy to K8S
+      uses: azure/k8s-deploy@v1
+      with:
+        manifests: |
+          ${{ github.workspace }}/manifests/manifests-${{ inputs.ENV }}.yaml
+        images: |
+          ${{ needs.build-push-ecr.outputs.IMAGE_URI }}
+        namespace: ${{ inputs.NAMESPACE }}
