@@ -28,6 +28,10 @@ on:
         required: false
         type: string
         default: ''
+      CLOUD:
+        required: false
+        type: string
+        default: ''
 
 jobs:
 
@@ -153,7 +157,7 @@ jobs:
       uses: azure/k8s-deploy@v1
       with:
         manifests: |
-          ${{ github.workspace }}/${{ inputs.MODULE }}/manifests/manifests-${{ inputs.ENV }}.yaml
+          ${{ github.workspace }}/${{ inputs.MODULE }}/manifests/manifest-${{ inputs.CLOUD }}-${{ inputs.ENV }}.yaml
         images: |
           ${{ needs.build-push-ecr.outputs.IMAGE_URI }}
         namespace: ${{ inputs.NAMESPACE }}
