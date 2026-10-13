@@ -45,17 +45,12 @@ jobs:
     - name: checkout
       uses: actions/checkout@v4
 
-    - name: Set up JDK 17
+    - name: Set up JDK 17 + Maven 3.9.9
       uses: actions/setup-java@v4
       with:
         java-version: "17"
         distribution: "temurin"
-
-    # 第二步：单独安装 Maven 3.9.9
-    - name: Setup Maven 3.9.9
-      uses: actions/setup-maven@v4
-      with:
-        maven-version: "3.9.9"
+        maven-version: "3.9.9" # 核心：锁定maven版本，避开3.10
 
     - name: Check Java & Maven Version
       run: |
