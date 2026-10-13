@@ -51,6 +51,17 @@ jobs:
         java-version: "17"
         distribution: "temurin"
 
+    # 第二步：单独安装 Maven 3.9.9
+    - name: Setup Maven 3.9.9
+      uses: actions/setup-maven@v4
+      with:
+        maven-version: "3.9.9"
+
+    - name: Check Java & Maven Version
+      run: |
+        java -version
+        mvn -v
+
     - name: Run mvn clean install
       run: mvn -U -s mvn-settings.xml clean install -DskipTests -ntp ${{ inputs.MVN_ARGS }}
 
